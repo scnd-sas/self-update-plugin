@@ -1,3 +1,3 @@
 # Self-update Plugin
 
-A Composer plugin for self-updating the project codebase.
+A Composer plugin for self-project updating.

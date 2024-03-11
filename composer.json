@@ -1,12 +1,12 @@
 {
-    "name": "yceruto/self-update-plugin",
-    "description": "A Composer plugin for self-updating the project codebase",
+    "name": "scnd-sas/self-update-plugin",
+    "description": "A Composer plugin for self-project updating",
     "type": "composer-plugin",
     "license": "MIT",
     "authors": [
         {
             "name": "Yonel Ceruto",
-            "email": "yonelceruto@gmail.com"
+            "email": "yonel.ceruto@scnd.com"
         }
     ],
     "require": {
@@ -14,7 +14,8 @@
         "composer-plugin-api": "^2.0"
     },
     "require-dev": {
-        "composer/composer": "^2.0"
+        "composer/composer": "^2.0",
+        "phpunit/phpunit": "^11.0"
     },
     "autoload": {
         "psr-4": {
