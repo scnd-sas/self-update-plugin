@@ -4,17 +4,9 @@ namespace Yceruto\SelfUpdatePlugin\Command;
 
 use Composer\Command\BaseCommand;
 use Composer\Factory;
-use Composer\IO\IOInterface;
-use Composer\Json\JsonFile;
-use Composer\Package\BasePackage;
-use Composer\Package\CompletePackageInterface;
-use Composer\Package\Version\VersionParser;
-use Composer\Package\Version\VersionSelector;
-use Composer\Pcre\Preg;
-use Composer\Repository\CompositeRepository;
-use Composer\Repository\RepositoryFactory;
-use Composer\Repository\RepositorySet;
 use React\Promise\PromiseInterface;
+use RuntimeException;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
@@ -22,72 +14,43 @@ use ZipArchive;
 
 class SelfUpdateCommand extends BaseCommand
 {
+    use UpdateTrait;
+
     protected function configure(): void
     {
         $this
             ->setName('project:self-update')
-            ->setDescription('Updates the project to the latest version');
+            ->setDescription('Updates the project to a defined version')
+            ->addArgument('version', InputArgument::OPTIONAL, 'The version to update to')
+        ;
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = $this->getIO();
 
-        if (null === $composer = $this->tryComposer(true, true)) {
-            $io->writeError('Composer is not available.');
+        try {
+            $package = $this->findPackage($input->getArgument('version'));
+        } catch (RuntimeException $e) {
+            $io->writeError(sprintf('<error>%s</error>', $e->getMessage()));
 
             return self::FAILURE;
         }
 
-        $extra = $composer->getPackage()->getExtra();
-        $packageName = $extra['self-update-plugin']['package'] ?? $composer->getPackage()->getName();
-        $packageVersion = $extra['self-update-plugin']['require'] ?? null;
         $packageDir = realpath(dirname(Factory::getComposerFile()));
-
-        if (!$packageName || '__root__' === $packageName) {
-            $io->writeError('Unable to determine the package name. Please, add "extra.self-update-plugin.package" config to your composer.json file and try again.');
-
-            return self::FAILURE;
-        }
-
-        if (!$packageVersion) {
-            $io->writeError('Unable to determine the package require version. Please, add "extra.self-update-plugin.require" config to your composer.json file and try again.');
-
-            return self::FAILURE;
-        }
-
-        $io->writeError(
-            sprintf(
-                '<info>Updating the current project with the "%s" package, version "%s".</info>',
-                $packageName,
-                $packageVersion
-            )
-        );
-
-        $package = $this->selectPackage($io, $packageName, $packageVersion);
-
-        if (!$package) {
-            $io->writeError('<error>The specified package was not found.</error>');
-
-            return self::FAILURE;
-        }
-
-        $packageLockFile = new JsonFile(
-            path: $packageDir.DIRECTORY_SEPARATOR.substr($packageName, strpos($packageName, '/') + 1).'.lock',
-            io: $io,
-        );
+        $packageLockFile = $this->getLockFile($packageDir, $package, $io);
 
         if ($packageLockFile->exists()) {
             $lock = $packageLockFile->read();
 
-            if ($package->getName() === $packageName && $package->getVersion() === ($lock['version'] ?? false)) {
+            if ($package->getName() === $lock['name'] && $package->getVersion() === $lock['version']) {
                 $io->writeError(sprintf('Project is already patched with version <info>%s</info> for <info>%s</info>', $package->getPrettyVersion(), $package->getName()));
 
                 return self::SUCCESS;
             }
         }
 
-        $filePath = $composer->getArchiveManager()->archive($package, $package->getDistType(), $packageDir);
+        $filePath = $this->composer()->getArchiveManager()->archive($package, $package->getDistType(), $packageDir);
 
         $promise = $this->extractWithZipArchive($filePath, $packageDir);
         $promise->then(function () use ($io, $filePath, $packageLockFile, $package) {
@@ -98,76 +61,13 @@ class SelfUpdateCommand extends BaseCommand
             $packageLockFile->write([
                 'name' => $package->getName(),
                 'version' => $package->getVersion(),
+                'datetime' => date('Y-m-d H:i:s'),
             ]);
 
             $io->writeError(sprintf('Project has been patched with version <info>%s</info> for <info>%s</info>', $package->getPrettyVersion(), $package->getName()));
         });
 
         return self::SUCCESS;
-    }
-
-    private function selectPackage(
-        IOInterface $io,
-        string $packageName,
-        ?string $version = null
-    ): (BasePackage&CompletePackageInterface)|false {
-        $io->writeError('<info>Searching for the specified package.</info>');
-
-        if ($composer = $this->tryComposer()) {
-            $localRepo = $composer->getRepositoryManager()->getLocalRepository();
-            $repo = new CompositeRepository(
-                array_merge([$localRepo], $composer->getRepositoryManager()->getRepositories())
-            );
-            $minStability = $composer->getPackage()->getMinimumStability();
-        } else {
-            $defaultRepos = RepositoryFactory::defaultReposWithDefaultManager($io);
-            $io->writeError(
-                'No composer.json found in the current directory, searching packages from '.implode(
-                    ', ',
-                    array_keys($defaultRepos)
-                )
-            );
-            $repo = new CompositeRepository($defaultRepos);
-            $minStability = 'stable';
-        }
-
-        if ($version !== null && Preg::isMatchStrictGroups('{@(stable|RC|beta|alpha|dev)$}i', $version, $match)) {
-            $minStability = $match[1];
-            $version = substr($version, 0, -strlen($match[0]));
-        }
-
-        $repoSet = new RepositorySet($minStability);
-        $repoSet->addRepository($repo);
-        $parser = new VersionParser();
-        $constraint = $version !== null ? $parser->parseConstraints($version) : null;
-        $packages = $repoSet->findPackages(strtolower($packageName), $constraint);
-
-        if (count($packages) > 1) {
-            $versionSelector = new VersionSelector($repoSet);
-            $package = $versionSelector->findBestCandidate(strtolower($packageName), $version, $minStability);
-            if ($package === false) {
-                $package = reset($packages);
-            }
-
-            $io->writeError('<comment>Found multiple matches, selected '.$package->getPrettyString().'.</comment>');
-            $io->writeError('<comment>Please use a more specific constraint to pick a different package.</comment>');
-        } elseif (count($packages) === 1) {
-            $package = reset($packages);
-            $io->writeError('<info>Found an exact match '.$package->getPrettyString().'.</info>');
-        } else {
-            $io->writeError('<error>Could not find a package matching '.$packageName.'.</error>');
-
-            return false;
-        }
-
-        if (!$package instanceof CompletePackageInterface) {
-            throw new \LogicException('Expected a CompletePackageInterface instance but found '.get_class($package));
-        }
-        if (!$package instanceof BasePackage) {
-            throw new \LogicException('Expected a BasePackage instance but found '.get_class($package));
-        }
-
-        return $package;
     }
 
     /**

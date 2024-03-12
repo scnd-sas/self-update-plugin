@@ -7,6 +7,7 @@ use Composer\IO\IOInterface;
 use Composer\Plugin\Capability\CommandProvider;
 use Composer\Plugin\Capable;
 use Composer\Plugin\PluginInterface;
+use Yceruto\SelfUpdatePlugin\Command\CheckUpdateCommand;
 use Yceruto\SelfUpdatePlugin\Command\SelfUpdateCommand;
 
 class ComposerPlugin implements PluginInterface, Capable, CommandProvider
@@ -34,6 +35,7 @@ class ComposerPlugin implements PluginInterface, Capable, CommandProvider
     {
         return [
             new SelfUpdateCommand(),
+            new CheckUpdateCommand(),
         ];
     }
 }
